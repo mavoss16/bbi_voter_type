@@ -44,7 +44,7 @@ page_fluid(
       ),
       selected = NULL
     )
-  ) |> card() |> accordion(),
+  ),
   
   # textOutput("district_info"),
   # textOutput("voter_class"),
