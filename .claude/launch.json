@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shiny",
+      "runtimeExecutable": "C:/Program Files/R/R-4.5.3/bin/Rscript.exe",
+      "runtimeArgs": ["-e", "shiny::runApp('.', port = 7461, launch.browser = FALSE)"],
+      "port": 7461
+    }
+  ]
+}

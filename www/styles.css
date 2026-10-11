@@ -2,9 +2,390 @@
   font-family: Arial;
 }
 
-/*
+/* Constant size for iframe embedding: the app fills the iframe's height
+   (designed for ~800px) and scrolls inside #app_frame rather than growing
+   the page, so the embedding site never needs to resize the iframe */
+html,
 body {
-  margin-left: 10%;
-  margin-right: 10%;
+  height: 100%;
+  overflow: hidden;
 }
-*/
+
+#app_frame {
+  height: 100vh;
+  overflow-y: auto;
+  padding: 24px 4px;
+  box-sizing: border-box;
+}
+
+#results {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+/* Lined up with the results text, which sits inside a padded container */
+.change-answers {
+  display: inline-block;
+  margin: 8px 0.75rem 28px;
+  font-weight: bold;
+  text-decoration: none;
+}
+
+.change-answers:hover {
+  text-decoration: underline;
+}
+
+.change-answers .fa,
+.change-answers svg {
+  margin-right: 6px;
+}
+/* Loading circle shown while the app is looking up and rendering results */
+#loading {
+  display: none;
+  padding: 40px 0;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto;
+  border: 5px solid #dee2e6;
+  border-top-color: #0d6efd;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Keep stale or half-rendered results out of view while loading. Uses
+   visibility rather than display: none so Shiny keeps rendering the outputs. */
+body.app-loading #results {
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+}
+
+/* Numbered input steps, stacked in one centered column */
+.input-steps {
+  position: relative;
+  max-width: 640px;
+  margin: 0 auto 24px;
+}
+
+/* Loading circle over the inputs while an address is being geocoded */
+#inputs_loading {
+  display: none;
+  position: absolute;
+  inset: -8px;
+  z-index: 10;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 8px;
+  color: #495057;
+  font-weight: bold;
+}
+
+body.geocoding #inputs_loading {
+  display: flex;
+}
+
+.input-step {
+  margin-bottom: 28px;
+}
+
+.input-step h4 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #0d6efd;
+  color: #fff;
+  font-size: 16px;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.input-hint {
+  display: block;
+  color: #6c757d;
+  margin-top: -8px;
+}
+
+.search-warning {
+  color: #dc3545;
+  margin: 6px 0 0;
+}
+
+.search-found {
+  color: #198754;
+  font-weight: bold;
+  margin: 6px 0 0;
+}
+
+.search-found .fa,
+.search-found svg {
+  margin-right: 6px;
+}
+
+/* "— or choose from the list —" divider between the two ways to pick a district */
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #6c757d;
+  margin: 18px 0 10px;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid #dee2e6;
+}
+
+/* Let the party buttons wrap onto a second line on narrow screens */
+#party_input .btn-group-container-sw {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+#party_input .btn-group-container-sw .btn {
+  flex: 1 1 0;
+  min-width: 100px;
+  margin: 0;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px !important;
+}
+
+#party_input .btn-check:checked + .btn {
+  background-color: #0d6efd;
+  border-color: #0d6efd;
+  color: #fff;
+}
+
+.submit-row {
+  text-align: center;
+}
+
+.submit-row .btn {
+  min-width: 240px;
+}
+
+.submit-row .input-hint {
+  margin-top: 8px;
+}
+
+/* Results headline: grade badge, voter type and one-line summary */
+.results-summary {
+  padding: 0 0.75rem;
+  margin-bottom: 8px;
+}
+
+.results-headline {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.results-headline h3 {
+  margin: 2px 0 4px;
+}
+
+.grade-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 76px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 3px solid;
+  font-size: 32px;
+  font-weight: bold;
+}
+
+.results-context {
+  font-size: 14px;
+  color: #6c757d;
+}
+
+.results-tagline {
+  font-size: 17px;
+  color: #495057;
+}
+
+.results-explanation {
+  color: #495057;
+}
+
+/* Grade colors, from vivid purple (A+, a competitive "purple district")
+   draining to gray (F). Avoids the red and blue party colors. The voter type
+   in the headline takes a matching color. */
+.grade-badge.grade-a { background: #534AB7; border-color: #3C3489; color: #fff; }
+.grade-badge.grade-a-plus { background: #3C3489; border-color: #26215C; color: #fff; }
+.grade-badge.grade-b { background: #CECBF6; border-color: #7F77DD; color: #3C3489; }
+.grade-badge.grade-c { background: #EEEDFE; border-color: #AFA9EC; color: #534AB7; }
+.grade-badge.grade-d { background: #F1EFE8; border-color: #B4B2A9; color: #5F5E5A; }
+.grade-badge.grade-f { background: #D3D1C7; border-color: #5F5E5A; color: #2C2C2A; }
+
+.voter-type.grade-a,
+.voter-type.grade-a-plus { color: #3C3489; }
+.voter-type.grade-b { color: #534AB7; }
+.voter-type.grade-c { color: #7F77DD; }
+.voter-type.grade-d { color: #5F5E5A; }
+.voter-type.grade-f { color: #444441; }
+
+/* Primary-then-general path beside the dial (built by path_card() in server.R) */
+.vote-path {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Side by side with the dial, line the heading up with the dial card's heading */
+@media (min-width: 768px) {
+  .vote-path {
+    padding-top: 33px;
+  }
+}
+
+/* Section headings for the path and the dial */
+.path-heading,
+.dial-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: #212529;
+}
+
+.path-heading {
+  margin-bottom: 12px;
+}
+
+.path-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid;
+}
+
+.path-pass {
+  background: #EEEDFE;
+  border-color: #AFA9EC;
+}
+
+.path-fail {
+  background: #F1EFE8;
+  border-color: #D3D1C7;
+}
+
+.path-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 15px;
+}
+
+.path-pass .path-icon { background: #534AB7; }
+.path-fail .path-icon { background: #888780; }
+
+.path-label {
+  font-size: 13px;
+  color: #6c757d;
+}
+
+.path-title {
+  font-weight: bold;
+}
+
+.path-pass .path-title { color: #3C3489; }
+.path-fail .path-title { color: #444441; }
+
+.path-detail {
+  font-size: 14px;
+  color: #495057;
+}
+
+.path-arrow {
+  text-align: center;
+  color: #adb5bd;
+  margin: 4px 0;
+}
+
+/* General election margin dial (built by margin_dial() in server.R) */
+.dial-card {
+  padding: 16px 20px;
+}
+
+.dial-title {
+  margin-bottom: 4px;
+}
+
+.margin-dial {
+  text-align: center;
+}
+
+.margin-dial svg {
+  display: block;
+  width: 100%;
+  max-width: 340px;
+  margin: 0 auto;
+}
+
+.dial-threshold {
+  stroke: #212529;
+  stroke-width: 2;
+  stroke-dasharray: 3 2;
+}
+
+.dial-threshold-label,
+.dial-end-label {
+  font-size: 12px;
+  fill: #6c757d;
+}
+
+.dial-needle {
+  stroke: #212529;
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.dial-hub {
+  fill: #212529;
+}
+
+.dial-value {
+  font-size: 28px;
+  font-weight: bold;
+  line-height: 1.2;
+  margin-top: 6px;
+}
+
+.dial-zone {
+  color: #6c757d;
+}
