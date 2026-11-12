@@ -2,23 +2,37 @@
 library(readr)
 library(dplyr)
 library(stringr)
+library(purrr)
 
+# Builds data/voter_district_data.rds for the app from the better_ballot_iowa
+# pipeline (src/00_config.R through src/07_hd_elections.R), which should be
+# checked out next to this repository. Run from this repository's root.
 
+upstream <- "../better_ballot_iowa"
+source(file.path(upstream, "src", "00_config.R"), chdir = FALSE)
 
-house_voters <- read_rds("data/house_district_voter_classification.rds")
-house_results <- read_rds("data/election_results/ia_2024_leg_general_wide.rds") |> 
-  filter(race_level == "State Representative")
-house_primaries <- read_rds("data/election_results/ia_2024_leg_primary_wide.rds") |> 
-  filter(race_level == "State Representative") |> 
-  mutate(party = str_remove(party, ".$"))
+# One row per year x chamber x district x party
+voters <- read_rds(file.path(upstream, "data", "voter_classification.rds"))
+
+# General election winner and runner-up for each race, every year and chamber
+results <- unique(voters$year) |>
+  map(\(election_year){
+    read_rds(file.path(upstream, leg_results_path("general", election_year, "wide"))) |>
+      ungroup() |>
+      filter(race_level %in% chambers) |>
+      mutate(
+        year = election_year,
+        chamber = names(chambers)[match(race_level, chambers)]
+      )
+  }) |>
+  bind_rows()
 
 
 percent <- scales::label_percent(accuracy = 0.1)
 
 
-combined_data <- house_voters |>
-  left_join(house_results) |>
-  left_join(house_primaries)
+combined_data <- voters |>
+  left_join(results, by = c("year", "chamber", "district_num"))
 
 grades <- c("A+", "A", "B", "C", "D", "F")
 
@@ -48,7 +62,7 @@ combined_data <- combined_data |>
 
 
 
-write_rds(combined_data, "voter-type/data/voter_district_data.rds")
+write_rds(combined_data, "data/voter_district_data.rds")
 
 
 
@@ -56,7 +70,7 @@ write_rds(combined_data, "voter-type/data/voter_district_data.rds")
 library(ggplot2)
 
 combined_data |>
-  filter(party == "No Party") |>
+  filter(party == "No Party", year == max(year), chamber == "House") |>
   count(grade) |>
   ggplot(aes(x = grade, y = n, label = n)) +
   geom_col(fill = "#e1b6fa") +

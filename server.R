@@ -10,7 +10,9 @@ library(sf)
 
 
 house_boundaries <- st_read("data/district_boundaries/Plan2_House.shp")
-district_data <- read_rds("data/voter_district_data.rds")
+# The data holds every year and chamber; the app shows the 2024 House for now
+district_data <- read_rds("data/voter_district_data.rds") |>
+  filter(year == 2024, chamber == "House")
 voter_type_text <- read_csv("data/voter_type_text.csv")
 
 legislators <- read_csv("data/house_legislators.csv") |>
