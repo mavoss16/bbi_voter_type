@@ -1,0 +1,425 @@
+---
+# Static, serverless prototype of the Shiny app in the repository root.
+# The page title is set in _quarto.yml (pagetitle) so none shows on the page.
+# Data comes from data/*.json, written by prep_static_data.R.
+---
+
+```{ojs}
+//| output: false
+
+// Data -------------------------------------------------------------------
+
+districtRows = FileAttachment("data/districts.json").json()
+legislators = FileAttachment("data/legislators.json").json()
+voterTypeText = FileAttachment("data/voter_type_text.json").json()
+boundaries = FileAttachment("data/house_districts.geojson").json()
+turf = require("@turf/turf@7.2.0")
+
+// Address lookup -----------------------------------------------------------
+
+// Rough box around Iowa, so geocoders prefer Iowa matches
+iowaBox = ({xmin: -96.7, ymin: 40.3, xmax: -90.1, ymax: 43.6})
+
+// Esri result types precise enough to place a home in a district. City, ZIP
+// and county matches are rejected: their center could be in any district.
+esriPreciseTypes = new Set([
+  "PointAddress", "Subaddress", "StreetAddress", "StreetAddressExt",
+  "StreetInt", "StreetMidBlock", "StreetBetween", "POI"
+])
+
+// Turn an address into [longitude, latitude], or null if it can't be found
+// precisely. Esri first, OpenStreetMap (Nominatim) if Esri can't be reached
+// or finds nothing. Both are called straight from the browser; the address
+// isn't sent anywhere else.
+async function geocode(address) {
+  const query = /\b(ia|iowa)\b/i.test(address) ? address : `${address}, Iowa`;
+
+  try {
+    const url = new URL("https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates");
+    url.search = new URLSearchParams({
+      SingleLine: query, f: "json", maxLocations: 1, countryCode: "USA",
+      outFields: "Addr_type",
+      searchExtent: [iowaBox.xmin, iowaBox.ymin, iowaBox.xmax, iowaBox.ymax].join(",")
+    });
+    const result = (await (await fetch(url)).json()).candidates?.[0];
+    if (result && esriPreciseTypes.has(result.attributes.Addr_type)) {
+      return [result.location.x, result.location.y];
+    }
+  } catch (error) {
+    console.warn("Esri geocoder failed, trying OpenStreetMap", error);
+  }
+
+  try {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.search = new URLSearchParams({
+      q: query, format: "jsonv2", limit: 1, countrycodes: "us",
+      viewbox: [iowaBox.xmin, iowaBox.ymax, iowaBox.xmax, iowaBox.ymin].join(","),
+      bounded: 1
+    });
+    const result = (await (await fetch(url)).json())[0];
+    // place_rank 26+ is a street or more precise
+    if (result && result.place_rank >= 26) return [+result.lon, +result.lat];
+  } catch (error) {
+    console.warn("OpenStreetMap geocoder failed", error);
+  }
+
+  return null;
+}
+
+// The House district a point falls in, or null outside Iowa. The boundaries
+// are simplified, which opens thin slivers along district lines; a point in
+// one goes to the nearest district within 50 m.
+function findDistrict(lonLat) {
+  const point = turf.point(lonLat);
+  const hit = boundaries.features.find(f => turf.booleanPointInPolygon(point, f));
+  if (hit) return hit.properties.district_num;
+
+  let nearest = null, nearestDistance = Infinity;
+  for (const f of boundaries.features) {
+    const distance = Math.abs(turf.pointToPolygonDistance(point, f, {units: "meters"}));
+    if (distance < nearestDistance) [nearest, nearestDistance] = [f, distance];
+  }
+  return nearestDistance <= 50 ? nearest.properties.district_num : null;
+}
+
+// Labels and lookups --------------------------------------------------------
+
+partyChoices = [
+  ["No Party", "No Party"], ["Republican", "Rep"], ["Democratic", "Dem"],
+  ["Libertarian", "Lib"], ["Other", "Other"]
+]
+
+// Friendly URL values for ?party= onto the party values
+partyLookup = ({
+  rep: "Rep", republican: "Rep",
+  dem: "Dem", democrat: "Dem", democratic: "Dem",
+  lib: "Lib", libertarian: "Lib",
+  other: "Other",
+  none: "No Party", np: "No Party", "no party": "No Party", noparty: "No Party"
+})
+
+partyNames = ({Rep: "Republican", Dem: "Democrat", Lib: "Libertarian", "No Party": "No party", Other: "Other party"})
+partyPrimaryNames = ({Rep: "Republican", Dem: "Democratic"})
+voterGroupNames = ({Lib: "Libertarian voters", "No Party": "no-party voters", Other: "other-party voters"})
+
+// Matches the Shiny app's percent(): one decimal, trailing zero dropped
+percent = x => `${+(x * 100).toFixed(1)}%`
+
+legislatorLabel = district => {
+  const legislator = legislators.find(l => l.district_num === district);
+  return legislator ? `${legislator.name} (${district})` : null;
+}
+
+// Small line icons, standing in for the Shiny app's Font Awesome icons
+icon = {
+  const paths = {
+    check: "M3 8.5l3.5 3.5L13 4.5",
+    xmark: "M4 4l8 8M12 4l-8 8",
+    "arrow-down": "M8 2v12M3 9l5 5 5-5",
+    "arrow-left": "M14 8H2M7 3L2 8l5 5",
+    search: "M11 11l4 4M12 7A5 5 0 1 1 2 7a5 5 0 0 1 10 0z",
+    "circle-check": "M15 8A7 7 0 1 1 1 8a7 7 0 0 1 14 0zM5 8.2l2 2 4-4"
+  };
+  return name => htl.svg`<svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="${paths[name]}"></path></svg>`;
+}
+
+// Results pieces (ported from server.R) ---------------------------------
+
+// General election margin dial, from "Close race" to "Foregone conclusion".
+// The four zones match the margin categories rather than a linear 0-100%
+// scale, since half of all margins are over 35%. Uncontested races pin the
+// needle at the very end.
+dialZones = [
+  {label: "Close race", from: 0, to: 0.05, color: "#3C3489"},
+  {label: "Competitive", from: 0.05, to: 0.10, color: "#7F77DD"},
+  {label: "Leaning", from: 0.10, to: 0.20, color: "#B4B2A9"},
+  {label: "Foregone conclusion", from: 0.20, to: 0.60, color: "#5F5E5A"}
+]
+
+dialZoneIndex = margin => dialZones.findLastIndex(z => margin >= z.from)
+
+function marginDial(margin, uncontested) {
+  const cx = 150, cy = 160, r = 110, n = dialZones.length;
+  const point = (position, radius = r) => {
+    const angle = Math.PI * (1 - position);
+    return [cx + radius * Math.cos(angle), cy - radius * Math.sin(angle)];
+  };
+  let position = 1;
+  if (!uncontested) {
+    const zone = dialZoneIndex(margin), z = dialZones[zone];
+    const within = (margin - z.from) / (z.to - z.from);
+    // Contested races stop just short of the end, kept for uncontested ones
+    position = Math.min((zone + Math.min(within, 1)) / n, 0.97);
+  }
+  const needle = point(position, 88);
+  const zoneLabel = uncontested ? "Uncontested" : dialZones[dialZoneIndex(margin)].label;
+  const value = uncontested ? "No opponent" : percent(margin);
+
+  const arcs = dialZones.map((z, i) => {
+    const [ax, ay] = point(i / n), [bx, by] = point((i + 1) / n);
+    return htl.svg`<path d=${`M${ax} ${ay} A${r} ${r} 0 0 1 ${bx} ${by}`}
+      stroke=${z.color} stroke-width="22" fill="none"></path>`;
+  });
+
+  return htl.html`<div class="margin-dial">
+    <svg viewBox="0 0 300 200" role="img" aria-label=${`General election margin: ${value}, ${zoneLabel}`}>
+      ${arcs}
+      <line x1="150" y1="28" x2="150" y2="74" class="dial-threshold"/>
+      <text x="150" y="20" text-anchor="middle" class="dial-threshold-label">10% competitive line</text>
+      <line x1=${cx} y1=${cy} x2=${needle[0]} y2=${needle[1]} class="dial-needle"/>
+      <circle cx=${cx} cy=${cy} r="7" class="dial-hub"/>
+      <text x="20" y="194" class="dial-end-label">Close race</text>
+      <text x="280" y="194" text-anchor="end" class="dial-end-label">Foregone conclusion</text>
+    </svg>
+    <div class="dial-value">${value}</div>
+    <div class="dial-zone">${zoneLabel}</div>
+  </div>`;
+}
+
+// The voter's two chances to make a difference, the primary and then the
+// general election, each with whether it gave them a meaningful vote
+function primaryStep(d) {
+  const winnerPrimary = partyPrimaryNames[d.gen_winning_party];
+  const contested = !["No Primary", "Uncontested"].includes(d.prim_margin_description);
+  const noChoice = {pass: false, title: "No primary choice", detail: "No one ran against your party's candidate."};
+  switch (d.voter_classification) {
+    case "Meaningful (General)":
+    case "Meaningful (Primary)":
+      if (contested) return {pass: true, title: "You had more than one choice",
+        detail: `Your party's primary was contested, decided by ${d.prim_margin_description}.`};
+      if (d.prim_margin_description === "No Primary") return {pass: false, title: "No primary choice",
+        detail: "No one ran in your party's primary."};
+      return noChoice;
+    case "Unneeded": return noChoice;
+    case "Outnumbered": return {pass: false, title: "The deciding primary was closed to you",
+      detail: `The race was decided in the ${winnerPrimary} primary, which you can't vote in.`};
+    case "Excluded": return {pass: false, title: "The deciding primary was closed to you",
+      detail: `The race was decided in the ${winnerPrimary} primary, which is closed to ${voterGroupNames[d.party]}.`};
+    case "None-of-the-Above": return {pass: false, title: "Primaries closed to you",
+      detail: `Iowa's two major party primaries are closed to ${voterGroupNames[d.party]}.`};
+  }
+}
+
+function generalStep(d) {
+  if (d.gen_margin_category === "Uncontested") {
+    return {pass: false, title: "No race", detail: `${d.first_vote_cand} ran unopposed.`};
+  }
+  if (d.gen_competitive) {
+    return {pass: true, title: "Competitive", detail: `Decided by ${percent(d.gen_margin)}, under the 10% line.`};
+  }
+  return {pass: false, title: "Not competitive", detail: `Decided by ${percent(d.gen_margin)}.`};
+}
+
+pathCard = (label, step) => htl.html`<div class="path-card ${step.pass ? "path-pass" : "path-fail"}">
+  <div class="path-icon">
+    ${icon(step.pass ? "check" : "xmark")}
+    <span class="visually-hidden">${step.pass ? "Meaningful vote" : "No meaningful vote"}</span>
+  </div>
+  <div>
+    <div class="path-label">${label}</div>
+    <div class="path-title">${step.title}</div>
+    <div class="path-detail">${step.detail}</div>
+  </div>
+</div>`
+```
+
+::: {#app_frame}
+
+```{ojs}
+// The inputs. Its value is {district, party} once "See my results" is
+// pressed (or a URL gives both), and null while the inputs are showing.
+viewof choice = {
+  const form = htl.html`<form id="inputs" class="input-steps" novalidate>
+    <div id="inputs_loading">
+      <div class="spinner"></div>
+      <p>Looking up your address...</p>
+    </div>
+
+    <div class="input-step">
+      <h4><span class="step-num">1</span>Find your district</h4>
+      <label class="form-label" for="address_input">Search for your address</label>
+      <div class="address-search">
+        <input id="address_input" class="form-control" type="search" autocomplete="street-address"
+          placeholder="e.g. 1007 E Grand Ave, Des Moines">
+        <button id="address_search" class="btn btn-outline-secondary" type="button" aria-label="Search">
+          ${icon("search")}
+        </button>
+      </div>
+      <small class="input-hint">Press Enter or click the search button.</small>
+      <p id="search_warning" class="search-warning app-hidden">Address could not be found.</p>
+      <p id="search_found" class="search-found app-hidden"></p>
+      <div class="or-divider"><span>or choose from the list</span></div>
+      <label class="form-label" for="legislator_input">Select your Iowa House representative</label>
+      <select id="legislator_input" class="form-select" required>
+        <option value="">Choose a representative</option>
+        ${legislators.map(l => htl.html`<option value=${l.district_num}>${l.name} (${l.district_num})</option>`)}
+      </select>
+    </div>
+
+    <div class="input-step">
+      <h4><span class="step-num">2</span>Your party registration</h4>
+      <div id="party_input" role="radiogroup" aria-label="Your party registration">
+        ${partyChoices.flatMap(([label, value]) => {
+          // Separate elements, not one template: htl wraps a multi-element
+          // template in a <span>, which would stop the buttons stretching
+          const id = `party_${value.replace(" ", "_")}`;
+          return [
+            htl.html`<input type="radio" class="btn-check" name="party" id=${id} value=${value}>`,
+            htl.html`<label class="btn btn-outline-primary" for=${id}>${label}</label>`
+          ];
+        })}
+      </div>
+    </div>
+
+    <div class="submit-row">
+      <button id="submit" class="btn btn-primary btn-lg" type="submit" disabled>See my results</button>
+      <small id="submit_hint" class="input-hint">Choose a representative and a party to see your results.</small>
+    </div>
+
+    <p class="privacy-note">Addresses are looked up with Esri, or OpenStreetMap as a backup,
+      straight from your browser. They aren't stored.</p>
+  </form>`;
+
+  const $ = id => form.querySelector(`#${id}`);
+  const address = $("address_input"), legislator = $("legislator_input");
+  const warning = $("search_warning"), found = $("search_found");
+  const party = () => form.querySelector("input[name=party]:checked")?.value;
+
+  // Submit is only clickable once a representative and a party are chosen;
+  // until then a hint under the button says what's missing
+  const updateSubmit = () => {
+    const ready = Boolean(legislator.value && party());
+    $("submit").disabled = !ready;
+    $("submit_hint").classList.toggle("app-hidden", ready);
+  };
+
+  const setValue = value => {
+    form.value = value;
+    form.classList.toggle("app-hidden", value !== null);
+    document.getElementById("app_frame").scrollTop = 0;
+    form.dispatchEvent(new Event("input", {bubbles: true}));
+  };
+
+  // Look up an address and choose its representative. The address stays in
+  // the box with a confirmation under it.
+  const search = async () => {
+    const text = address.value.trim();
+    if (!text) return;
+    document.body.classList.add("geocoding");
+    const lonLat = await geocode(text);
+    const district = lonLat && findDistrict(lonLat);
+    document.body.classList.remove("geocoding");
+    warning.classList.toggle("app-hidden", Boolean(district));
+    found.classList.toggle("app-hidden", !district);
+    if (district) {
+      legislator.value = district;
+      found.replaceChildren(icon("circle-check"), ` Found District ${district}: ${legislatorLabel(district).replace(/ \(\d+\)$/, "")}`);
+    }
+    updateSubmit();
+    return district;
+  };
+
+  $("address_search").addEventListener("click", search);
+  address.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); search(); }
+  });
+
+  // Choosing a representative from the list replaces any address search
+  legislator.addEventListener("change", () => {
+    address.value = "";
+    warning.classList.add("app-hidden");
+    found.classList.add("app-hidden");
+    updateSubmit();
+  });
+  form.querySelectorAll("input[name=party]").forEach(r => r.addEventListener("change", updateSubmit));
+
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (legislator.value && party()) setValue({district: +legislator.value, party: party()});
+  });
+
+  // Called by "Change my answers" in the results
+  form.showInputs = () => setValue(null);
+
+  // Fill the inputs from URL parameters, e.g. ?district=45&party=Dem or
+  // ?address=1007 E Grand Ave Des Moines&party=Rep, and show the results right
+  // away when both a district and a party are given
+  // Waits a tick so the page is listening to the form before it's submitted
+  form.value = null;
+  setTimeout(async () => {
+    const params = new URLSearchParams(window.location.search);
+    const urlParty = partyLookup[(params.get("party") ?? "").toLowerCase()];
+    if (urlParty) form.querySelector(`input[value="${urlParty}"]`).checked = true;
+
+    let district = null;
+    if (params.has("district")) {
+      district = legislatorLabel(+params.get("district")) ? +params.get("district") : null;
+      if (district) legislator.value = district;
+    } else if (params.get("address")) {
+      address.value = params.get("address");
+      district = await search();
+    }
+    updateSubmit();
+    if (district && urlParty) setValue({district, party: urlParty});
+  });
+
+  return form;
+}
+```
+
+```{ojs}
+// The results, shown in place of the inputs once a choice is submitted
+{
+  if (!choice) return htl.html`<div></div>`;
+
+  const d = districtRows.find(r => r.district_num === choice.district && r.party === choice.party);
+  const typeText = voterTypeText.find(t => t.voter_classification === d.voter_classification);
+  const gradeClass = `grade-${d.grade.toLowerCase().replace("+", "-plus")}`;
+  const uncontested = d.gen_margin_category === "Uncontested";
+  const electionText = uncontested
+    ? `In November 2024, ${d.first_vote_cand} ran unopposed for your Iowa House seat.`
+    : `In your Iowa House district's November 2024 election, ${d.first_vote_cand} won with a margin of ${percent(d.margin)}.`;
+
+  const changeAnswers = htl.html`<a href="#" class="change-answers">${icon("arrow-left")} Change my answers</a>`;
+  changeAnswers.addEventListener("click", event => {
+    event.preventDefault();
+    viewof choice.showInputs();
+  });
+
+  return htl.html`<div id="results">
+    ${changeAnswers}
+
+    <div class="results-summary">
+      <div class="results-headline">
+        <div class="grade-badge ${gradeClass}" role="img" aria-label=${`Voter power grade: ${d.grade}`}>${d.grade}</div>
+        <div>
+          <div class="results-context">House District ${d.district_num} · ${partyNames[d.party]}</div>
+          <h3>Your voter type is <span class="voter-type ${gradeClass}">${d.voter_classification}</span></h3>
+          <div class="results-tagline">${typeText.summary_text}</div>
+        </div>
+      </div>
+      <p>${electionText}</p>
+      <p class="results-explanation">${typeText.explanation_text}</p>
+    </div>
+
+    <div class="results-columns">
+      <div class="vote-path">
+        <div class="path-heading">Your two chances to make a difference</div>
+        ${pathCard("Primary · June 2024", primaryStep(d))}
+        <div class="path-arrow">${icon("arrow-down")}</div>
+        ${pathCard("General · November 2024", generalStep(d))}
+      </div>
+      <div class="card dial-card">
+        <div class="card-body">
+          <div class="dial-title">How close was the general election?</div>
+          ${marginDial(d.gen_margin, uncontested)}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+```
+
+:::
