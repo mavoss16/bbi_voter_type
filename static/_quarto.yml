@@ -1,0 +1,14 @@
+project:
+  type: default
+  output-dir: _site
+  # Copied as-is next to the page, which loads them with FileAttachment
+  resources:
+    - data/
+
+format:
+  html:
+    pagetitle: "What kind of Iowa voter are you?"
+    page-layout: custom
+    css: styles.css
+    echo: false
+    anchor-sections: false

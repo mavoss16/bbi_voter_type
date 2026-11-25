@@ -4,8 +4,23 @@
     {
       "name": "shiny",
       "runtimeExecutable": "C:/Program Files/R/R-4.5.3/bin/Rscript.exe",
-      "runtimeArgs": ["-e", "shiny::runApp('.', port = 7461, launch.browser = FALSE)"],
+      "runtimeArgs": [
+        "-e",
+        "shiny::runApp('.', port = 7461, launch.browser = FALSE)"
+      ],
       "port": 7461
+    },
+    {
+      "name": "static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "7462",
+        "--directory",
+        "static/_site"
+      ],
+      "port": 7462
     }
   ]
 }
